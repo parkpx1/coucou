@@ -307,15 +307,32 @@ final class HookServer: @unchecked Sendable {
     @MainActor
     private func upsertExternalAgent(id: String, name: String) {
         let state = AppState.shared
-        guard state.tasks.firstIndex(where: { $0.id == id }) == nil else { return }
-        let color = IslandConst.colorForProject(name)
-        let task = AgentTask(id: id, name: name, color: color, state: .idle, steps: [], source: .agent)
-        if let claudeIdx = state.tasks.firstIndex(where: { $0.id == "integration_claude" }) {
-            state.tasks.insert(task, at: claudeIdx + 1)
-        } else {
-            state.tasks.append(task)
+        if state.tasks.firstIndex(where: { $0.id == id }) == nil {
+            let color = IslandConst.colorForProject(name)
+            let task = AgentTask(id: id, name: name, color: color, state: .idle, steps: [], source: .agent)
+            if let claudeIdx = state.tasks.firstIndex(where: { $0.id == "integration_claude" }) {
+                state.tasks.insert(task, at: claudeIdx + 1)
+            } else {
+                state.tasks.append(task)
+            }
         }
-        if state.focusId == nil { state.focusId = id }
+        // Follow the agent that is actually working. Without this the island stays
+        // on the permanent Claude Code pill, which is the default focus at launch
+        // and so is never nil by the time an external agent appears.
+        //
+        // Runs on every event, not only on pill creation: after `Stop` the pill
+        // lingers ~5s before removal, so a prompt sent inside that window would
+        // otherwise never regain focus.
+        //
+        // Only takes focus from an IDLE pill. If the focused pill is mid-task,
+        // awaiting approval or showing an error, that is what the user needs to
+        // see, so it is left alone.
+        let focusedState = state.focusId.flatMap { fid in
+            state.tasks.first(where: { $0.id == fid })?.state
+        }
+        if focusedState == nil || focusedState == .idle || state.focusId == id {
+            state.focusId = id
+        }
         state.syncMode()
     }
 
