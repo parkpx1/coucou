@@ -7,6 +7,11 @@ extension AgentTask {
     /// All available integration pills. Claude is always active; others are opt-in (max 4).
     static let integrationAgents: [AgentTask] = [
         AgentTask(id: "integration_claude",  name: "Claude Code", color: "#F5F6F8", state: .idle, steps: [], source: .claudeCode, isIntegration: true),
+        // Deliberately keyed "agent_opencode", not "integration_opencode": that is
+        // the id HookServer derives from the plugin's `coucou_agent: "opencode"`
+        // field. Reusing it means the permanent pill IS the one events land on, so
+        // enabling this cannot produce a second, duplicate pill at runtime.
+        AgentTask(id: "agent_opencode",       name: "opencode",    color: "#6E9FFF", state: .idle, steps: [], source: .agent, isIntegration: true),
         AgentTask(id: "integration_resend",  name: "Resend",    color: "#22C55E", state: .idle, steps: [], source: .n8n, isIntegration: true),
         AgentTask(id: "integration_n8n",     name: "n8n",       color: "#F29B38", state: .idle, steps: [], source: .n8n, isIntegration: true),
         AgentTask(id: "integration_vercel",  name: "Vercel",    color: "#7C5CFF", state: .idle, steps: [], source: .n8n, isIntegration: true),
@@ -18,6 +23,7 @@ extension AgentTask {
 
     /// IDs that can be toggled (VS Code is always on and excluded from this list)
     static let toggleableIntegrationIds: [String] = [
+        "agent_opencode",
         "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
         "integration_notion", "integration_calcom", "integration_stripe",
     ]
@@ -142,7 +148,7 @@ final class AppState: ObservableObject {
     }
 
     // Active integration pills (VS Code excluded — always on). Max 4.
-    @Published var activeIntegrations: Set<String> = ["integration_resend", "integration_n8n", "integration_vercel", "integration_github"] {
+    @Published var activeIntegrations: Set<String> = ["agent_opencode", "integration_resend", "integration_n8n", "integration_vercel"] {
         didSet {
             if let data = try? JSONEncoder().encode(Array(activeIntegrations)) {
                 UserDefaults.standard.set(data, forKey: "activeIntegrations")
@@ -240,6 +246,21 @@ final class AppState: ObservableObject {
     }
 
     func removeTask(id: String) {
+        // An enabled integration pill is permanent: Stop/SessionEnd must reset it to
+        // idle rather than delete it, or it would vanish between sessions and never
+        // come back without a relaunch. Dynamic agent pills (not in the integration
+        // list) are still removed as before.
+        if AgentTask.integrationAgents.contains(where: { $0.id == id }) {
+            updateTask(id: id, state: .idle)
+            if let idx = tasks.firstIndex(where: { $0.id == id }) {
+                tasks[idx].steps = []
+                tasks[idx].stepIndex = 0
+                tasks[idx].pillBadge = nil
+            }
+            syncMode()
+            syncView()
+            return
+        }
         tasks.removeAll { $0.id == id }
         if focusId == id { focusId = tasks.first?.id }
         syncMode()

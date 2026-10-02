@@ -83,7 +83,18 @@ if pgrep -f "$DEST" > /dev/null 2>&1 || pgrep -f "$BUILD_DIR/$APP_NAME" > /dev/n
 fi
 
 echo "==> Installing to $DEST"
-rm -rf "$DEST"
+# macOS app-management protection can deny rm -rf on an existing bundle in
+# /Applications, and a partial delete leaves an empty husk that also cannot be
+# replaced. Clear it defensively: rmdir handles the husk case, and the final
+# check fails with a usable instruction rather than a bare "Permission denied".
+rm -rf "$DEST" 2>/dev/null || true
+[ -d "$DEST" ] && rmdir "$DEST" 2>/dev/null || true
+if [ -e "$DEST" ]; then
+  echo "error: cannot replace $DEST (macOS app-management protection)." >&2
+  echo "       Remove it in Finder, or grant Terminal access under" >&2
+  echo "       System Settings → Privacy & Security → App Management, then re-run." >&2
+  exit 1
+fi
 ditto "$BUILD_DIR/$APP_NAME" "$DEST"
 rm -rf "$BUILD_DIR"
 
