@@ -1,11 +1,12 @@
 # Coucou × opencode
 
-Gives [opencode](https://opencode.ai) its own pill in the notch, next to Claude Code.
+Gives [opencode](https://opencode.ai) its own pill in the notch, next to Claude
+Code — including **Allow / Deny straight from the notch**.
 
-No changes to the Coucou app are needed. Coucou already accepts any tool that writes
-newline-delimited JSON with a `coucou_agent` field — see [`docs/AGENTS.md`](../../docs/AGENTS.md).
-This is a ~160-line opencode plugin that translates opencode's plugin events into that
-payload and writes them to Coucou's Unix socket.
+Session display needs no app changes: Coucou already accepts any tool that writes
+newline-delimited JSON with a `coucou_agent` field — see
+[`docs/AGENTS.md`](../../docs/AGENTS.md). Approvals do need a small app patch, which
+is on this branch and described below.
 
 ## Install
 
@@ -23,6 +24,9 @@ cp coucou-opencode.ts .opencode/plugins/
 
 opencode loads files in those directories at startup. Restart opencode, and the pill
 appears on the first tool call.
+
+For approvals you also need a Coucou build from this branch — the released app
+still declines to show a card for third-party agents.
 
 Nothing else to configure: no API key, no settings file edit, no hook installation.
 Unlike the Claude Code integration, this does not touch `~/.claude/settings.json`.
@@ -48,20 +52,53 @@ Two details worth knowing:
   `session.created` fires before the first tool call, so any event will create the
   pill if it does not exist yet.
 
-## No approvals
+## Approvals from the notch
 
-Coucou's Allow/Deny card is **Claude Code only**, and that is a limitation on both
-sides:
+**Works.** This required a small patch to the Coucou app, included on this branch.
 
-- `docs/AGENTS.md` states `PermissionRequest` is not implemented for third-party
-  agents — Coucou answers immediately with no decision.
-- opencode exposes `permission.asked` / `permission.replied` as *events*. An event
-  can observe a permission request but cannot answer it, so there is no way for a
-  plugin to hold the request open while the user clicks a button.
+Two things had to be true, and both turned out to be:
 
-So you get live session display, tool-by-tool progress, completion and error states.
-Permission prompts stay in the terminal. `tool.execute.before` can block by throwing,
-but throwing only denies — there is no "wait for a human, then allow".
+1. **opencode can block.** `permission.ask` is a *hook*, not just an event: it
+   returns a `Promise` that opencode awaits, and takes a mutable
+   `output.status: "ask" | "deny" | "allow"`. So the plugin can hold the permission
+   open on the socket and set the status when you click. Verified: with a fake
+   Coucou replying after 1500 ms, the hook waited 1503 ms and then applied `allow`.
+   (The earlier `permission.asked` / `permission.replied` *events* cannot do this —
+   they only observe.)
+
+2. **Coucou's approval machinery is agent-agnostic.** `processPermissionRequest`
+   already holds the fd open and replies with whatever you click. It was gated by
+   an explicit early return for external agents, and three hardcoded
+   `integration_claude` pill ids.
+
+### App patch
+
+| Change | Why |
+|---|---|
+| Removed the external-agent early return | It replied `ask` immediately, so the card never appeared |
+| VS Code filter now applies to Claude Code only | External agents carry their own pill, matching what `processEvent` already does |
+| Card routes to `agent_<name>` | Previously always the Claude pill, so an opencode request looked like a Claude one |
+| Added `pendingApprovalAgentId` | The decision reset the Claude pill regardless of who asked |
+
+Upstream's `docs/AGENTS.md` says approval support "will be added with Codex
+support", so this may land upstream eventually and make the patch redundant.
+
+### Decision mapping
+
+| Notch button | opencode result |
+|---|---|
+| Allow | `allow` |
+| Always | `allow` — **this request only** |
+| Deny | `deny` |
+| Dismissed, timeout, or Coucou not running | untouched → opencode prompts in the terminal |
+
+**"Always" does not persist.** Claude Code's relay returns `updatedPermissions` so
+the rule is saved; opencode has no plugin-side equivalent, so Always behaves like
+Allow for this one request. The pattern is still sent as `permission_suggestions`
+in case that changes.
+
+The plugin's timeout is 115 s, just under the app's own auto-`ask`, so opencode
+regains control first rather than both sides expiring.
 
 ## Fail-safe behaviour
 
@@ -71,7 +108,8 @@ slow down or break a coding session:
 - If Coucou is not running the socket is absent and `send()` returns immediately.
 - Connection errors are swallowed — Coucou quitting mid-session is normal.
 - A 2-second socket timeout bounds the worst case if the app is wedged.
-- Nothing is ever awaited, so no opencode event waits on the notch.
+- Nothing is ever awaited **except** `permission.ask`, where waiting is the point.
+  That one path still falls back to opencode's own prompt on timeout or error.
 
 Measured with no socket present: 150 events in ~1 ms, no exceptions. Same with a
 stale socket file left behind by a crash.

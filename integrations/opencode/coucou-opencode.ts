@@ -39,6 +39,62 @@ const findSocket = (): string | null =>
     }
   }) ?? null
 
+/** How long to wait for a click before giving up and letting opencode ask. */
+const APPROVAL_TIMEOUT_MS = 115_000
+
+/**
+ * Send one event and wait for Coucou's decision line.
+ *
+ * Used only for PermissionRequest, which is the one case where blocking is the
+ * point: the app holds the connection open until the user clicks, then writes
+ * {"permissionDecision": "..."}. Mirrors the wait in Coucou's own Python relay.
+ *
+ * Resolves to null on any failure — app not running, socket error, timeout,
+ * unparseable reply — so the caller falls back to opencode's own prompt rather
+ * than denying or hanging.
+ */
+function request(payload: Record<string, unknown>): Promise<string | null> {
+  const socketPath = findSocket()
+  if (!socketPath) return Promise.resolve(null)
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: string | null, sock?: net.Socket) => {
+      if (settled) return
+      settled = true
+      sock?.destroy()
+      resolve(value)
+    }
+
+    try {
+      const sock = net.createConnection(socketPath)
+      // Slightly under the app's own 115s auto-"ask" so opencode regains control
+      // first; otherwise both sides time out and the user sees nothing.
+      sock.setTimeout(APPROVAL_TIMEOUT_MS)
+      sock.on("timeout", () => finish(null, sock))
+      sock.on("error", () => finish(null, sock))
+
+      let buf = ""
+      sock.on("data", (chunk) => {
+        buf += chunk.toString()
+        const nl = buf.indexOf("\n")
+        if (nl < 0) return
+        try {
+          const decision = JSON.parse(buf.slice(0, nl))?.permissionDecision
+          finish(typeof decision === "string" ? decision : null, sock)
+        } catch {
+          finish(null, sock)
+        }
+      })
+      // A clean close with no line means the app declined to answer.
+      sock.on("close", () => finish(null))
+      sock.on("connect", () => sock.write(JSON.stringify(payload) + "\n"))
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
 /**
  * Fire-and-forget a single event.
  *
@@ -104,6 +160,43 @@ export const CoucouPlugin = async ({ directory, worktree }: any) => {
   }
 
   return {
+    /**
+     * Approve or deny from the notch.
+     *
+     * This hook returns a Promise and opencode awaits it, so the permission stays
+     * open while we wait on the socket — which is what makes notch approval
+     * possible at all. Setting `output.status` decides the request.
+     *
+     * Mapping, constrained by what opencode accepts:
+     *   allow  → "allow"
+     *   always → "allow"  (opencode has no plugin-side persistence, so "always"
+     *                      approves this request only; the rule is not saved)
+     *   deny   → "deny"
+     *   ask / timeout / Coucou absent → leave untouched, so opencode prompts
+     *                                   in the terminal as usual
+     */
+    "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
+      const id = input?.sessionID ?? fallbackSession
+      ensureSession(id)
+
+      const decision = await request({
+        ...base("PermissionRequest", id, cwd),
+        // Coucou renders tool_name as the card heading and tool_input.command as
+        // the detail line, so map opencode's permission into those two fields.
+        tool_name: input?.type ?? "permission",
+        tool_input: { command: input?.title ?? "" },
+        permission_suggestions: Array.isArray(input?.pattern)
+          ? input.pattern
+          : input?.pattern
+            ? [input.pattern]
+            : [],
+      })
+
+      if (decision === "allow" || decision === "always") output.status = "allow"
+      else if (decision === "deny") output.status = "deny"
+      // "ask", null, anything unexpected → untouched; opencode asks in-terminal.
+    },
+
     /**
      * Tool lifecycle. PreToolUse drives the "working" state and the ticker label,
      * so the tool name is what the user actually sees in the notch.
