@@ -1120,7 +1120,7 @@ struct IntegrationCardView: View {
                     Circle()
                         .fill(Color(hex: task.color))
                         .frame(width: 7, height: 7)
-                    Text(task.id == "integration_claude" ? "VS Code" : task.name)
+                    Text(task.id == "integration_claude" ? "Claude Code" : task.name)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Color(hex: "#F5F6F8"))
                     Text("Integration")
@@ -2283,9 +2283,9 @@ struct AgentPill: View {
     let onTap: () -> Void
     @State private var isHovered = false
 
-    // VS Code pill always shows "VS Code" label regardless of active project name
+    // The Claude Code pill keeps its label regardless of the active project name
     private var displayName: String {
-        task.id == "integration_claude" ? "VS Code" : task.name
+        task.id == "integration_claude" ? "Claude Code" : task.name
     }
 
     var body: some View {

@@ -501,7 +501,7 @@ final class HookServer: @unchecked Sendable {
         guard let idx = state.tasks.firstIndex(where: { $0.id == "integration_claude" }) else { return }
         state.tasks[idx].steps = []
         state.tasks[idx].stepIndex = 0
-        state.tasks[idx].name = "VS Code"
+        state.tasks[idx].name = "Claude Code"
         state.tasks[idx].pillBadge = nil
     }
 
